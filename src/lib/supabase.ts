@@ -73,7 +73,6 @@ export type MainMember = {
   isincurrentcohort: boolean | null
   prevsanumbers: string[] | null
   previousgroups: string[] | null
-  circleGroupLink: string | null
   current_cohort_id: number | null
 }
 

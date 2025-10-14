@@ -44,7 +44,6 @@ const MemberManagement: React.FC = () => {
     isincurrentcohort: false,
     prevsanumbers: [] as string[],
     previousgroups: [] as string[],
-    circleGroupLink: '',
     current_cohort_id: ''
   })
 
@@ -93,25 +92,6 @@ const MemberManagement: React.FC = () => {
     }
   }
 
-  // Function to get circle group link based on circle number
-  const getCircleGroupLink = (cohortId: string, circleNumber: string) => {
-    if (!cohortId || !circleNumber) return ''
-
-    const cohort = cohorts.find(c => c.id?.toString() === cohortId)
-    if (cohort && cohort.circles && Array.isArray(cohort.circles)) {
-      // circleNumber is now just the number (e.g., "14"), so we need to convert to index
-      const circleIndex = parseInt(circleNumber) - 1
-      const circle = cohort.circles[circleIndex]
-      
-      // Handle both old format (string) and new format (object)
-      if (typeof circle === 'string') {
-        return circle
-      } else if (typeof circle === 'object' && circle !== null) {
-        return circle.circle_whatsapp_link || ''
-      }
-    }
-    return ''
-  }
 
   const fetchData = async () => {
     try {
@@ -163,8 +143,7 @@ const MemberManagement: React.FC = () => {
           ...mainMemberForm,
           sanumber,
           probationvisits: parseInt(mainMemberForm.probationvisits.toString()) || 0,
-          current_cohort_id: mainMemberForm.current_cohort_id ? parseInt(mainMemberForm.current_cohort_id) : null,
-          circleGroupLink: getCircleGroupLink(mainMemberForm.current_cohort_id, mainMemberForm.circle_number)
+          current_cohort_id: mainMemberForm.current_cohort_id ? parseInt(mainMemberForm.current_cohort_id) : null
         }
 
         const { error } = await supabase
@@ -206,8 +185,7 @@ const MemberManagement: React.FC = () => {
           id: authData.user.id, // Use the auth user's UUID
           sanumber,
           probationvisits: parseInt(mainMemberForm.probationvisits.toString()) || 0,
-          current_cohort_id: mainMemberForm.current_cohort_id ? parseInt(mainMemberForm.current_cohort_id) : null,
-          circleGroupLink: getCircleGroupLink(mainMemberForm.current_cohort_id, mainMemberForm.circle_number)
+          current_cohort_id: mainMemberForm.current_cohort_id ? parseInt(mainMemberForm.current_cohort_id) : null
         }
 
         // Try to insert the member with retry logic for foreign key constraint
@@ -428,7 +406,6 @@ const MemberManagement: React.FC = () => {
         isincurrentcohort: member.isincurrentcohort || false,
         prevsanumbers: member.prevsanumbers || [],
         previousgroups: member.previousgroups || [],
-        circleGroupLink: member.circleGroupLink || '',
         current_cohort_id: member.current_cohort_id?.toString() || ''
       })
       setActiveTab('main')
@@ -508,7 +485,6 @@ const MemberManagement: React.FC = () => {
         isincurrentcohort: true,
         prevsanumbers: [],
         previousgroups: [],
-        circleGroupLink: '',
         current_cohort_id: tasterMember.current_cohort_id
       }
 
@@ -656,7 +632,6 @@ const MemberManagement: React.FC = () => {
             isincurrentcohort: true,
             prevsanumbers: [],
             previousgroups: [],
-            circleGroupLink: '',
             current_cohort_id: tasterMember.current_cohort_id
           }
 
@@ -876,7 +851,6 @@ const MemberManagement: React.FC = () => {
       isincurrentcohort: false,
       prevsanumbers: [],
       previousgroups: [],
-      circleGroupLink: '',
       current_cohort_id: ''
     })
     setEditingMember(null)
@@ -1006,7 +980,6 @@ const MemberManagement: React.FC = () => {
 
           // Determine circle assignment - Random distribution
           let circleNumber = ''
-          let circleGroupLink = ''
           
           // Get available circles from cohort
           const cohort = cohorts.find(c => c.id?.toString() === cohortId)
@@ -1030,24 +1003,12 @@ const MemberManagement: React.FC = () => {
             // Randomly select a circle
             const randomIndex = Math.floor(Math.random() * availableCircles.length)
             circleNumber = availableCircles[randomIndex]
-            
-            // Get the corresponding circle group link
-            const circleIndex = parseInt(circleNumber) - 1
-            const circle = cohort?.circles?.[circleIndex]
-            
-            // Handle both old format (string) and new format (object)
-            if (typeof circle === 'string') {
-              circleGroupLink = circle
-            } else if (typeof circle === 'object' && circle !== null) {
-              circleGroupLink = circle.circle_whatsapp_link || ''
-            }
           } else {
             // Fallback: create circles dynamically if none exist
             const totalMembers = csvData.length
             const estimatedCircles = Math.ceil(totalMembers / 10)
             const randomCircleIndex = Math.floor(Math.random() * estimatedCircles) + 1
             circleNumber = randomCircleIndex.toString() // Store just the number
-            circleGroupLink = ''
           }
 
           // Create main member data
@@ -1071,7 +1032,6 @@ const MemberManagement: React.FC = () => {
             isincurrentcohort: true,
             prevsanumbers: satNumber ? [satNumber] : [],
             previousgroups: [],
-            circleGroupLink: circleGroupLink,
             current_cohort_id: parseInt(cohortId)
           }
 
@@ -1932,8 +1892,7 @@ const MemberManagement: React.FC = () => {
                             setMainMemberForm(prev => ({ 
                               ...prev, 
                               current_cohort_id: cohortId,
-                              circle_number: '', // Reset circle number when cohort changes
-                              circleGroupLink: '' // Reset circle group link
+                              circle_number: '' // Reset circle number when cohort changes
                             }))
                             getAvailableCircles(cohortId)
                           }}
@@ -1958,8 +1917,7 @@ const MemberManagement: React.FC = () => {
                             const circleNumber = e.target.value
                             setMainMemberForm(prev => ({ 
                               ...prev, 
-                              circle_number: circleNumber,
-                              circleGroupLink: getCircleGroupLink(prev.current_cohort_id, circleNumber)
+                              circle_number: circleNumber
                             }))
                           }}
                           className="input-field"
@@ -1990,19 +1948,6 @@ const MemberManagement: React.FC = () => {
                           className="input-field"
                           min="0"
                         />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Circle Group Link
-                        </label>
-                        <input
-                          type="url"
-                          value={mainMemberForm.circleGroupLink}
-                          className="input-field bg-gray-50"
-                          placeholder="Auto-populated from selected circle"
-                          readOnly
-                        />
-                        <p className="text-xs text-gray-500 mt-1">Automatically populated when circle is selected</p>
                       </div>
                     </div>
                     <div>
