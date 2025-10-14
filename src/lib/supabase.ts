@@ -14,6 +14,11 @@ export type Member = {
   updated_at: string
 }
 
+export type Circle = {
+  circle_rep_whatsapp_contact: string
+  circle_whatsapp_link: string
+}
+
 export type CurrentCohort = {
   id: number | null
   active: boolean
@@ -28,7 +33,7 @@ export type CurrentCohort = {
   orientation_start_date: string | null
   taster_start_date: string | null
   taster_session_on: boolean
-  circles: any | null
+  circles: (Circle | string)[] | null
   created_at: string
   updated_at: string
   sermon_link: string | null

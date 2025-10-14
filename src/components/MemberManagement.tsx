@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase, CurrentCohort, TasterMember, MainMember } from '../lib/supabase'
-import { Users, Edit, Trash2, X, UserPlus, UserCheck, Settings, Search } from 'lucide-react'
+import { supabase, CurrentCohort, TasterMember, MainMember, Circle } from '../lib/supabase'
+import { Users, Edit, Trash2, X, UserPlus, UserCheck, Settings, Search, Upload, FileText } from 'lucide-react'
 
 const MemberManagement: React.FC = () => {
   const { user, signOut } = useAuth()
@@ -17,6 +17,11 @@ const MemberManagement: React.FC = () => {
   const [selectedCohort, setSelectedCohort] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [availableCircles, setAvailableCircles] = useState<string[]>([])
+  const [showCsvUpload, setShowCsvUpload] = useState(false)
+  const [csvFile, setCsvFile] = useState<File | null>(null)
+  const [csvData, setCsvData] = useState<any[]>([])
+  const [csvUploading, setCsvUploading] = useState(false)
+  const [csvSelectedCohort, setCsvSelectedCohort] = useState<string>('8')
 
   // Form data for main members
   const [mainMemberForm, setMainMemberForm] = useState({
@@ -72,7 +77,15 @@ const MemberManagement: React.FC = () => {
     const cohort = cohorts.find(c => c.id?.toString() === cohortId)
     if (cohort && cohort.circles && Array.isArray(cohort.circles)) {
       const circles = cohort.circles
-        .map((circle, index) => circle && circle.trim() !== '' ? `Circle ${index + 1}` : null)
+        .map((circle: any, index: number) => {
+          // Handle both old format (string) and new format (object)
+          if (typeof circle === 'string' && circle.trim() !== '') {
+            return (index + 1).toString() // Return just the number
+          } else if (typeof circle === 'object' && circle !== null && circle.circle_whatsapp_link?.trim() !== '') {
+            return (index + 1).toString() // Return just the number
+          }
+          return null
+        })
         .filter(circle => circle !== null) as string[]
       setAvailableCircles(circles)
     } else {
@@ -86,8 +99,16 @@ const MemberManagement: React.FC = () => {
 
     const cohort = cohorts.find(c => c.id?.toString() === cohortId)
     if (cohort && cohort.circles && Array.isArray(cohort.circles)) {
-      const circleIndex = parseInt(circleNumber.replace('Circle ', '')) - 1
-      return cohort.circles[circleIndex] || ''
+      // circleNumber is now just the number (e.g., "14"), so we need to convert to index
+      const circleIndex = parseInt(circleNumber) - 1
+      const circle = cohort.circles[circleIndex]
+      
+      // Handle both old format (string) and new format (object)
+      if (typeof circle === 'string') {
+        return circle
+      } else if (typeof circle === 'object' && circle !== null) {
+        return circle.circle_whatsapp_link || ''
+      }
     }
     return ''
   }
@@ -878,6 +899,289 @@ const MemberManagement: React.FC = () => {
     setEditingMember(null)
   }
 
+  // CSV Upload Functions
+  const parseCSV = (csvText: string) => {
+    const lines = csvText.split('\n')
+    const headers = lines[0].split(',').map(h => h.trim())
+    const data = []
+
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim()) {
+        const values = lines[i].split(',').map(v => v.trim())
+        const row: any = {}
+        
+        headers.forEach((header, index) => {
+          row[header] = values[index] || ''
+        })
+        
+        data.push(row)
+      }
+    }
+    
+    return data
+  }
+
+  const handleCsvFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file && file.type === 'text/csv') {
+      setCsvFile(file)
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const csvText = e.target?.result as string
+        const parsedData = parseCSV(csvText)
+        setCsvData(parsedData)
+      }
+      reader.readAsText(file)
+    } else {
+      setError('Please select a valid CSV file')
+    }
+  }
+
+  const handleBulkCreateMainMembers = async () => {
+    if (csvData.length === 0) {
+      setError('No data to process')
+      return
+    }
+
+    if (!confirm(`Are you sure you want to create ${csvData.length} main members from the CSV file? This will create new accounts for all members.`)) return
+
+    setCsvUploading(true)
+    setError('')
+
+    try {
+      const createdMembers: MainMember[] = []
+      const failedMembers: { member: any; error: string }[] = []
+
+      for (const row of csvData) {
+        // Extract data from CSV row
+        const fullName = row['Name'] || ''
+        const nameParts = fullName.split(' ')
+        const firstname = nameParts[0] || ''
+        const lastname = nameParts.slice(1).join(' ') || ''
+        const email = row['Email'] || ''
+        const phoneNumber = row['Phone Number'] || ''
+        const satNumber = row['SAT Number'] || ''
+        const volunteer = row['Volunteer'] || ''
+
+        if (!email || !firstname) {
+          failedMembers.push({ 
+            member: row, 
+            error: 'Missing required fields (email or name)' 
+          })
+          continue
+        }
+
+        try {
+
+          // Create auth user for the main member
+          const { data: authData, error: authError } = await supabase.auth.signUp({
+            email: email,
+            password: 'Adventure',
+            options: {
+              data: {
+                first_name: firstname,
+                last_name: lastname
+              }
+            }
+          })
+
+          if (authError) {
+            console.error('Auth error for', firstname, authError)
+            failedMembers.push({ member: row, error: authError.message })
+            continue
+          }
+
+          if (!authData.user) {
+            failedMembers.push({ member: row, error: 'No user data returned' })
+            continue
+          }
+
+          // Generate SA number for the main member
+          const cohortId = csvSelectedCohort
+          const paddedCohort = cohortId.padStart(3, '0')
+          const existingMembers = mainMembers.filter(m => m.sanumber?.startsWith(`SA/${paddedCohort}/`))
+          const nextIndex: number = existingMembers.length + createdMembers.length + 1
+          const paddedIndex: string = nextIndex.toString().padStart(3, '0')
+          const sanumber: string = `SA/${paddedCohort}/${paddedIndex}`
+
+          // Determine circle assignment - Random distribution
+          let circleNumber = ''
+          let circleGroupLink = ''
+          
+          // Get available circles from cohort
+          const cohort = cohorts.find(c => c.id?.toString() === cohortId)
+          let availableCircles: string[] = []
+          
+          if (cohort && cohort.circles && Array.isArray(cohort.circles)) {
+            availableCircles = cohort.circles
+              .map((circle: any, index: number) => {
+                // Handle both old format (string) and new format (object)
+                if (typeof circle === 'string' && circle.trim() !== '') {
+                  return (index + 1).toString() // Return just the number
+                } else if (typeof circle === 'object' && circle !== null && circle.circle_whatsapp_link?.trim() !== '') {
+                  return (index + 1).toString() // Return just the number
+                }
+                return null
+              })
+              .filter(circle => circle !== null) as string[]
+          }
+          
+          if (availableCircles.length > 0) {
+            // Randomly select a circle
+            const randomIndex = Math.floor(Math.random() * availableCircles.length)
+            circleNumber = availableCircles[randomIndex]
+            
+            // Get the corresponding circle group link
+            const circleIndex = parseInt(circleNumber) - 1
+            const circle = cohort?.circles?.[circleIndex]
+            
+            // Handle both old format (string) and new format (object)
+            if (typeof circle === 'string') {
+              circleGroupLink = circle
+            } else if (typeof circle === 'object' && circle !== null) {
+              circleGroupLink = circle.circle_whatsapp_link || ''
+            }
+          } else {
+            // Fallback: create circles dynamically if none exist
+            const totalMembers = csvData.length
+            const estimatedCircles = Math.ceil(totalMembers / 10)
+            const randomCircleIndex = Math.floor(Math.random() * estimatedCircles) + 1
+            circleNumber = randomCircleIndex.toString() // Store just the number
+            circleGroupLink = ''
+          }
+
+          // Create main member data
+          const mainMemberData: MainMember = {
+            id: authData.user.id,
+            firstname: firstname,
+            lastname: lastname,
+            email: email,
+            phonenumber: phoneNumber,
+            whatsapp: phoneNumber ? `https://wa.me/${phoneNumber}` : '',
+            bio: `Created from CSV upload (Original SAT: ${satNumber})${volunteer ? ` | Volunteer: ${volunteer}` : ''}`,
+            fcmtoken: '',
+            partnerid: '',
+            repid: '',
+            role: 'member',
+            sanumber,
+            status: 'active',
+            circle_number: circleNumber,
+            probationvisits: 0,
+            plancreated: false,
+            isincurrentcohort: true,
+            prevsanumbers: satNumber ? [satNumber] : [],
+            previousgroups: [],
+            circleGroupLink: circleGroupLink,
+            current_cohort_id: parseInt(cohortId)
+          }
+
+          // Insert main member with retry logic
+          let insertRetries = 0
+          const maxInsertRetries = 5
+          let insertSuccess = false
+          let data = null
+          let error = null
+
+          while (insertRetries < maxInsertRetries && !insertSuccess) {
+            const result = await supabase
+              .from('main_members')
+              .insert([mainMemberData])
+              .select()
+
+            if (result.error) {
+              if (result.error.message.includes('foreign key constraint')) {
+                await new Promise(resolve => setTimeout(resolve, 2000))
+                insertRetries++
+              } else {
+                error = result.error
+                break
+              }
+            } else {
+              data = result.data
+              insertSuccess = true
+            }
+          }
+
+          if (!insertSuccess && error) {
+            console.error('Supabase error for', firstname, error)
+            failedMembers.push({ member: row, error: error.message })
+            continue
+          }
+
+          if (data && data.length > 0) {
+            createdMembers.push(data[0])
+          }
+        } catch (error: any) {
+          console.error('Error creating member', firstname, error)
+          failedMembers.push({ member: row, error: error.message })
+        }
+      }
+
+      // Update cohort member count
+      if (createdMembers.length > 0) {
+        try {
+          const cohortId = parseInt(csvSelectedCohort)
+          const { data: existingMembers, error: countError } = await supabase
+            .from('main_members')
+            .select('id')
+            .eq('current_cohort_id', cohortId)
+
+          if (countError) throw countError
+
+          const totalMainMembers = existingMembers?.length || 0
+
+          const { error: cohortError } = await supabase
+            .from('current_cohort')
+            .update({ 
+              member_count: totalMainMembers,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', cohortId)
+
+          if (cohortError) throw cohortError
+
+          // Update local cohorts state
+          setCohorts(prev => 
+            prev.map(cohort => 
+              cohort.id === cohortId
+                ? { ...cohort, member_count: totalMainMembers }
+                : cohort
+            )
+          )
+        } catch (error) {
+          console.error('Error updating cohort member count:', error)
+        }
+      }
+
+      // Show results
+      let message = `Successfully created ${createdMembers.length} main members!`
+      if (failedMembers.length > 0) {
+        message += `\n\nFailed to create ${failedMembers.length} members:\n`
+        failedMembers.forEach(failed => {
+          message += `- ${failed.member['Name'] || 'Unknown'}: ${failed.error}\n`
+        })
+      }
+      
+      alert(message)
+      
+      // Add all created members to main members list
+      if (createdMembers.length > 0) {
+        setMainMembers(prev => [...createdMembers, ...prev])
+      }
+
+      // Reset CSV upload state
+      setCsvData([])
+      setCsvFile(null)
+      setShowCsvUpload(false)
+      setCsvSelectedCohort('8')
+    } catch (error: any) {
+      console.error('Error in bulk CSV creation:', error)
+      setError(error.message || 'Failed to create members from CSV')
+    } finally {
+      setCsvUploading(false)
+    }
+  }
+
   const filteredMainMembers = mainMembers.filter(member => {
     // Filter by cohort
     const cohortMatch = selectedCohort === 'all' || member.current_cohort_id?.toString() === selectedCohort
@@ -891,7 +1195,7 @@ const MemberManagement: React.FC = () => {
       member.phonenumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       member.whatsapp?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       member.role?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      member.circle_number?.toLowerCase().includes(searchQuery.toLowerCase())
+      (member.circle_number ? `Circle ${member.circle_number}`.toLowerCase().includes(searchQuery.toLowerCase()) : false)
     
     return cohortMatch && searchMatch
   })
@@ -978,6 +1282,13 @@ const MemberManagement: React.FC = () => {
               >
                 <UserPlus className="h-5 w-5 mr-2" />
                 Add Main Member
+              </button>
+              <button
+                onClick={() => setShowCsvUpload(true)}
+                className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center"
+              >
+                <Upload className="h-5 w-5 mr-2" />
+                Upload CSV
               </button>
               <button
                 onClick={() => {
@@ -1657,7 +1968,7 @@ const MemberManagement: React.FC = () => {
                           <option value="">Select Circle</option>
                           {availableCircles.map((circle) => (
                             <option key={circle} value={circle}>
-                              {circle}
+                              Circle {circle}
                             </option>
                           ))}
                         </select>
@@ -1916,6 +2227,196 @@ const MemberManagement: React.FC = () => {
                     </div>
                   </form>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* CSV Upload Modal */}
+        {showCsvUpload && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" style={{zIndex: 9999}}>
+            <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+              <div className="p-6">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-lg font-semibold">Upload CSV for Main Members</h3>
+                  <button
+                    onClick={() => {
+                      setShowCsvUpload(false)
+                      setCsvFile(null)
+                      setCsvData([])
+                      setCsvSelectedCohort('8')
+                    }}
+                    className="text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="h-6 w-6" />
+                  </button>
+                </div>
+
+                <div className="space-y-6">
+                  {/* CSV Format Instructions */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <h4 className="font-medium text-blue-900 mb-2">CSV Format Requirements:</h4>
+                    <ul className="text-sm text-blue-800 space-y-1">
+                      <li>• CSV must have headers: Name, Phone Number, SAT Number, Email, Birthday, Volunteer</li>
+                      <li>• Name field will be split into firstname and lastname</li>
+                      <li>• Phone Number will be used for WhatsApp link generation</li>
+                      <li>• SAT Number will be stored in previous SA numbers</li>
+                      <li>• Members will be assigned to the selected cohort</li>
+                      <li>• SA numbers will be auto-generated (SA/XXX/XXX)</li>
+                      <li>• Circle assignment will be random across available circles</li>
+                    </ul>
+                  </div>
+
+                  {/* Cohort Selection */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Assign to Cohort *
+                    </label>
+                    <select
+                      value={csvSelectedCohort}
+                      onChange={(e) => setCsvSelectedCohort(e.target.value)}
+                      className="input-field"
+                    >
+                      {cohorts.map((cohort) => (
+                        <option key={cohort.id} value={cohort.id?.toString()}>
+                          {cohort.nomenclature || `Cohort ${cohort.id}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Circle Assignment Info */}
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <h4 className="font-medium text-green-900 mb-2">Circle Assignment:</h4>
+                    <p className="text-sm text-green-800">
+                      Members will be randomly distributed across available circles in the selected cohort. 
+                      Circle WhatsApp links will be automatically assigned from the cohort's circle configuration.
+                    </p>
+                  </div>
+
+                  {/* File Upload */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Select CSV File *
+                    </label>
+                    <input
+                      type="file"
+                      accept=".csv"
+                      onChange={handleCsvFileChange}
+                      className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                    />
+                    {csvFile && (
+                      <p className="text-sm text-green-600 mt-2">
+                        ✓ Selected: {csvFile.name}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* CSV Preview */}
+                  {csvData.length > 0 && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Preview ({csvData.length} members):</h4>
+                      <div className="border border-gray-200 rounded-lg overflow-hidden">
+                        <div className="max-h-60 overflow-y-auto">
+                          <table className="min-w-full divide-y divide-gray-200">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Phone</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">SAT</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Circle</th>
+                              </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-200">
+                              {csvData.slice(0, 10).map((row, index) => {
+                                // Calculate random circle assignment for preview
+                                let circleNumber = ''
+                                const cohort = cohorts.find(c => c.id?.toString() === csvSelectedCohort)
+                                let availableCircles: string[] = []
+                                
+                                if (cohort && cohort.circles && Array.isArray(cohort.circles)) {
+                                  availableCircles = cohort.circles
+                                    .map((circle: any, circleIndex: number) => {
+                                      // Handle both old format (string) and new format (object)
+                                      if (typeof circle === 'string' && circle.trim() !== '') {
+                                        return (circleIndex + 1).toString() // Return just the number
+                                      } else if (typeof circle === 'object' && circle !== null && circle.circle_whatsapp_link?.trim() !== '') {
+                                        return (circleIndex + 1).toString() // Return just the number
+                                      }
+                                      return null
+                                    })
+                                    .filter(circle => circle !== null) as string[]
+                                }
+                                
+                                if (availableCircles.length > 0) {
+                                  // Use a deterministic "random" based on index for preview consistency
+                                  const randomIndex = index % availableCircles.length
+                                  circleNumber = availableCircles[randomIndex]
+                                } else {
+                                  // Fallback: estimate circles based on total members
+                                  const totalMembers = csvData.length
+                                  const estimatedCircles = Math.ceil(totalMembers / 10)
+                                  const randomCircleIndex = (index % estimatedCircles) + 1
+                                  circleNumber = randomCircleIndex.toString() // Store just the number
+                                }
+                                
+                                return (
+                                  <tr key={index}>
+                                    <td className="px-3 py-2 text-sm text-gray-900">{row['Name'] || '-'}</td>
+                                    <td className="px-3 py-2 text-sm text-gray-900">{row['Email'] || '-'}</td>
+                                    <td className="px-3 py-2 text-sm text-gray-900">{row['Phone Number'] || '-'}</td>
+                                    <td className="px-3 py-2 text-sm text-gray-900">{row['SAT Number'] || '-'}</td>
+                                    <td className="px-3 py-2 text-sm text-blue-600 font-medium">Circle {circleNumber}</td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                          {csvData.length > 10 && (
+                            <div className="px-3 py-2 text-sm text-gray-500 bg-gray-50">
+                              ... and {csvData.length - 10} more members
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="flex justify-end space-x-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCsvUpload(false)
+                        setCsvFile(null)
+                        setCsvData([])
+                        setCsvSelectedCohort('8')
+                      }}
+                      className="btn-secondary"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleBulkCreateMainMembers}
+                      disabled={csvData.length === 0 || csvUploading}
+                      className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 disabled:opacity-50 flex items-center"
+                    >
+                      {csvUploading ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                          Creating...
+                        </>
+                      ) : (
+                        <>
+                          <FileText className="h-4 w-4 mr-2" />
+                          Create {csvData.length} Members
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase, CurrentCohort } from '../lib/supabase'
+import { supabase, CurrentCohort, Circle } from '../lib/supabase'
 import { Users, Plus, Edit, Trash2, X, Calendar, Link, Users2, Upload, FileText } from 'lucide-react'
 
 const CohortManagement: React.FC = () => {
@@ -27,7 +27,7 @@ const CohortManagement: React.FC = () => {
     orientation_start_date: '',
     taster_start_date: '',
     taster_session_on: true,
-    circles: Array(20).fill(''),
+    circles: Array(20).fill({ circle_rep_whatsapp_contact: '', circle_whatsapp_link: '' }),
     sermon_link: ''
   })
 
@@ -39,6 +39,22 @@ const CohortManagement: React.FC = () => {
     const paddedCohort = cohortId.padStart(3, '0')
     const paddedIndex = (index + 1).toString().padStart(3, '0')
     return `SAT/${paddedCohort}/${paddedIndex}`
+  }
+
+  const convertToWhatsAppUrl = (phoneNumber: string) => {
+    if (!phoneNumber.trim()) return ''
+    
+    // Remove any non-digit characters
+    const cleanNumber = phoneNumber.replace(/\D/g, '')
+    
+    // If it starts with country code, use as is, otherwise assume it needs country code
+    if (cleanNumber.startsWith('232')) {
+      return `https://wa.me/${cleanNumber}`
+    } else if (cleanNumber.length >= 9) {
+      return `https://wa.me/232${cleanNumber}`
+    }
+    
+    return phoneNumber // Return original if can't determine format
   }
 
   const formatBirthday = (birthday: string) => {
@@ -82,10 +98,19 @@ const CohortManagement: React.FC = () => {
     }))
   }
 
-  const handleCircleChange = (index: number, value: string) => {
+  const handleCircleChange = (index: number, field: 'circle_rep_whatsapp_contact' | 'circle_whatsapp_link', value: string) => {
     setFormData(prev => ({
       ...prev,
-      circles: prev.circles.map((circle, i) => i === index ? value : circle)
+      circles: prev.circles.map((circle, i) => 
+        i === index 
+          ? { 
+              ...circle, 
+              [field]: field === 'circle_rep_whatsapp_contact' 
+                ? convertToWhatsAppUrl(value) 
+                : value 
+            }
+          : circle
+      )
     }))
   }
 
@@ -300,7 +325,11 @@ const CohortManagement: React.FC = () => {
       const cohortData = {
         ...formData,
         id: formData.id ? parseInt(formData.id) : null,
-        circles: formData.circles.filter(circle => circle.trim() !== '').length > 0 ? formData.circles : null
+        circles: formData.circles.filter(circle => 
+          circle.circle_whatsapp_link.trim() !== '' || circle.circle_rep_whatsapp_contact.trim() !== ''
+        ).length > 0 ? formData.circles.filter(circle => 
+          circle.circle_whatsapp_link.trim() !== '' || circle.circle_rep_whatsapp_contact.trim() !== ''
+        ) : null
       }
 
       if (editingCohort) {
@@ -343,9 +372,27 @@ const CohortManagement: React.FC = () => {
     setEditingCohort(cohort)
     
     // Parse circles from JSON or create empty array
-    let circlesArray = Array(20).fill('')
+    let circlesArray = Array(20).fill({ circle_rep_whatsapp_contact: '', circle_whatsapp_link: '' })
     if (cohort.circles && Array.isArray(cohort.circles)) {
-      circlesArray = [...cohort.circles, ...Array(20 - cohort.circles.length).fill('')].slice(0, 20)
+      // Handle both old format (array of strings) and new format (array of objects)
+      const parsedCircles = cohort.circles.map((circle: any) => {
+        if (typeof circle === 'string') {
+          // Old format - convert to new format
+          return {
+            circle_rep_whatsapp_contact: '',
+            circle_whatsapp_link: circle
+          }
+        } else if (typeof circle === 'object' && circle !== null) {
+          // New format - handle both old and new field names
+          return {
+            circle_rep_whatsapp_contact: circle.circle_rep_whatsapp_contact || circle.circle_rep_phonemuber || '',
+            circle_whatsapp_link: circle.circle_whatsapp_link || ''
+          }
+        }
+        return { circle_rep_whatsapp_contact: '', circle_whatsapp_link: '' }
+      })
+      
+      circlesArray = [...parsedCircles, ...Array(20 - parsedCircles.length).fill({ circle_rep_whatsapp_contact: '', circle_whatsapp_link: '' })].slice(0, 20)
     }
     
     setFormData({
@@ -397,7 +444,7 @@ const CohortManagement: React.FC = () => {
       orientation_start_date: '',
       taster_start_date: '',
       taster_session_on: true,
-      circles: Array(20).fill(''),
+      circles: Array(20).fill({ circle_rep_whatsapp_contact: '', circle_whatsapp_link: '' }),
       sermon_link: ''
     })
     setEditingCohort(null)
@@ -652,20 +699,32 @@ const CohortManagement: React.FC = () => {
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-4">
-                      Circle Links (20 circles)
+                      Circle Configuration (20 circles)
                     </label>
+                    <div className="mb-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                      <p className="text-sm text-blue-800">
+                        <strong>Note:</strong> Enter phone numbers (e.g., 23203240304) and they will be automatically converted to WhatsApp contact URLs (wa.me/23203240304)
+                      </p>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-4">
                       {formData.circles.map((circle, index) => (
-                        <div key={index} className="flex flex-col">
-                          <label className="text-xs font-medium text-gray-600 mb-1">
+                        <div key={index} className="flex flex-col space-y-2">
+                          <label className="text-xs font-medium text-gray-600">
                             Circle {index + 1}
                           </label>
                           <input
-                            type="url"
-                            value={circle}
-                            onChange={(e) => handleCircleChange(index, e.target.value)}
+                            type="tel"
+                            value={circle.circle_rep_whatsapp_contact.replace('https://wa.me/', '')}
+                            onChange={(e) => handleCircleChange(index, 'circle_rep_whatsapp_contact', e.target.value)}
                             className="input-field text-sm"
-                            placeholder="https://..."
+                            placeholder="Rep Phone Number (e.g., 23203240304)"
+                          />
+                          <input
+                            type="url"
+                            value={circle.circle_whatsapp_link}
+                            onChange={(e) => handleCircleChange(index, 'circle_whatsapp_link', e.target.value)}
+                            className="input-field text-sm"
+                            placeholder="Circle WhatsApp Group Link"
                           />
                         </div>
                       ))}
@@ -876,10 +935,26 @@ const CohortManagement: React.FC = () => {
                   </div>
                 )}
 
-                {cohort.circles && Array.isArray(cohort.circles) && cohort.circles.filter(circle => circle && circle.trim() !== '').length > 0 && (
+                {cohort.circles && Array.isArray(cohort.circles) && cohort.circles.filter(circle => {
+                  if (typeof circle === 'string') {
+                    return circle.trim() !== ''
+                  } else if (typeof circle === 'object' && circle !== null) {
+                    const circleObj = circle as any
+                    return circleObj.circle_whatsapp_link?.trim() !== '' || circleObj.circle_rep_whatsapp_contact?.trim() !== '' || circleObj.circle_rep_phonemuber?.trim() !== ''
+                  }
+                  return false
+                }).length > 0 && (
                   <div className="flex items-center text-sm text-gray-600">
                     <Users2 className="h-4 w-4 mr-2" />
-                    <span>{cohort.circles.filter(circle => circle && circle.trim() !== '').length} circles configured</span>
+                    <span>{cohort.circles.filter(circle => {
+                      if (typeof circle === 'string') {
+                        return circle.trim() !== ''
+                      } else if (typeof circle === 'object' && circle !== null) {
+                        const circleObj = circle as any
+                        return circleObj.circle_whatsapp_link?.trim() !== '' || circleObj.circle_rep_whatsapp_contact?.trim() !== '' || circleObj.circle_rep_phonemuber?.trim() !== ''
+                      }
+                      return false
+                    }).length} circles configured</span>
                   </div>
                 )}
               </div>
