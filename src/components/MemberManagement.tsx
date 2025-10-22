@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase, CurrentCohort, TasterMember, MainMember, Circle } from '../lib/supabase'
+import { supabase, CurrentCohort, TasterMember, MainMember } from '../lib/supabase'
 import { Users, Edit, Trash2, X, UserPlus, UserCheck, Settings, Search, Upload, FileText } from 'lucide-react'
 
 const MemberManagement: React.FC = () => {
@@ -738,6 +738,77 @@ const MemberManagement: React.FC = () => {
     }
   }
 
+  const handleCircleClick = async (member: MainMember) => {
+    if (!member.circle_number || !member.current_cohort_id) {
+      setError('Circle information not available for this member')
+      return
+    }
+
+    try {
+      // Find the cohort
+      const cohort = cohorts.find(c => c.id === member.current_cohort_id)
+      if (!cohort || !cohort.circles || !Array.isArray(cohort.circles)) {
+        setError('Circle configuration not found for this cohort')
+        return
+      }
+
+      // Get the circle index (circle_number is 1-based, array is 0-based)
+      const circleIndex = parseInt(member.circle_number) - 1
+      const circle = cohort.circles[circleIndex]
+
+      if (!circle) {
+        setError(`Circle ${member.circle_number} not found in this cohort`)
+        return
+      }
+
+      // Extract WhatsApp link from circle data
+      let whatsappLink = ''
+      if (typeof circle === 'string' && circle.trim() !== '') {
+        whatsappLink = circle.trim()
+      } else if (typeof circle === 'object' && circle !== null && circle.circle_whatsapp_link?.trim() !== '') {
+        whatsappLink = circle.circle_whatsapp_link.trim()
+      }
+
+      if (!whatsappLink) {
+        setError(`WhatsApp link not available for Circle ${member.circle_number}`)
+        return
+      }
+
+      // Copy the WhatsApp link to clipboard
+      await navigator.clipboard.writeText(whatsappLink)
+      
+      // Create WhatsApp contact link for the member
+      let contactLink = ''
+      if (member.phonenumber) {
+        // Clean phone number (remove any non-digit characters except +)
+        const cleanPhone = member.phonenumber.replace(/[^\d+]/g, '')
+        contactLink = `https://wa.me/${cleanPhone}`
+      } else if (member.whatsapp) {
+        // Extract phone number from existing WhatsApp link
+        const phoneMatch = member.whatsapp.match(/wa\.me\/(\d+)/)
+        if (phoneMatch) {
+          contactLink = `https://wa.me/${phoneMatch[1]}`
+        }
+      }
+
+      if (contactLink) {
+        // Open WhatsApp with the member's contact
+        window.open(contactLink, '_blank')
+        
+        // Show success message
+        setError('')
+        alert(`Circle ${member.circle_number} WhatsApp link copied to clipboard!\n\nWhatsApp opened for ${member.firstname} ${member.lastname}.\n\nYou can now paste the circle group link to invite them to join.`)
+      } else {
+        // Just copy the link if no contact info available
+        setError('')
+        alert(`Circle ${member.circle_number} WhatsApp link copied to clipboard!\n\nMember contact information not available, but you can manually share the link.`)
+      }
+    } catch (error: any) {
+      console.error('Error handling circle click:', error)
+      setError(error.message || 'Failed to copy circle link')
+    }
+  }
+
   const handleDelete = async (member: MainMember | TasterMember) => {
     if (!confirm('Are you sure you want to delete this member?')) return
 
@@ -1155,7 +1226,8 @@ const MemberManagement: React.FC = () => {
       member.phonenumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       member.whatsapp?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       member.role?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (member.circle_number ? `Circle ${member.circle_number}`.toLowerCase().includes(searchQuery.toLowerCase()) : false)
+      member.circle_number?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (member.circle_number ? `circle ${member.circle_number}`.toLowerCase().includes(searchQuery.toLowerCase()) : false)
     
     return cohortMatch && searchMatch
   })
@@ -1298,7 +1370,7 @@ const MemberManagement: React.FC = () => {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={`Search ${activeTab === 'main' ? 'main' : 'taster'} members by name, email, number, role...`}
+              placeholder={`Search ${activeTab === 'main' ? 'main' : 'taster'} members by name, email, number, role, circle...`}
               className="input-field pl-10 pr-4"
             />
             {searchQuery && (
@@ -1374,6 +1446,9 @@ const MemberManagement: React.FC = () => {
                         Role
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Circle
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Status
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1397,6 +1472,21 @@ const MemberManagement: React.FC = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-sm text-gray-900">{member.role || '-'}</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm font-medium">
+                            {member.circle_number ? (
+                              <button
+                                onClick={() => handleCircleClick(member)}
+                                className="text-blue-600 hover:text-blue-800 hover:underline cursor-pointer transition-colors"
+                                title="Click to copy circle WhatsApp link and open WhatsApp"
+                              >
+                                Circle {member.circle_number}
+                              </button>
+                            ) : (
+                              <span className="text-gray-500">-</span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
