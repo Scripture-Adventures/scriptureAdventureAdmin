@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase, CurrentCohort, Circle } from '../lib/supabase'
+import { supabase, CurrentCohort } from '../lib/supabase'
 import { Users, Plus, Edit, Trash2, X, Calendar, Link, Users2, Upload, FileText } from 'lucide-react'
 
 const CohortManagement: React.FC = () => {
@@ -47,11 +47,9 @@ const CohortManagement: React.FC = () => {
     // Remove any non-digit characters
     const cleanNumber = phoneNumber.replace(/\D/g, '')
     
-    // If it starts with country code, use as is, otherwise assume it needs country code
-    if (cleanNumber.startsWith('232')) {
+    // If it starts with country code, use as is, otherwise return the clean number without adding default country code
+    if (cleanNumber.length >= 10) {
       return `https://wa.me/${cleanNumber}`
-    } else if (cleanNumber.length >= 9) {
-      return `https://wa.me/232${cleanNumber}`
     }
     
     return phoneNumber // Return original if can't determine format
@@ -703,7 +701,7 @@ const CohortManagement: React.FC = () => {
                     </label>
                     <div className="mb-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                       <p className="text-sm text-blue-800">
-                        <strong>Note:</strong> Enter phone numbers (e.g., 23203240304) and they will be automatically converted to WhatsApp contact URLs (wa.me/23203240304)
+                        <strong>Note:</strong> Enter phone numbers (e.g., 23203240304 or 03240304) and they will be automatically converted to WhatsApp contact URLs. Include country code if needed.
                       </p>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-4">
@@ -717,7 +715,7 @@ const CohortManagement: React.FC = () => {
                             value={circle.circle_rep_whatsapp_contact.replace('https://wa.me/', '')}
                             onChange={(e) => handleCircleChange(index, 'circle_rep_whatsapp_contact', e.target.value)}
                             className="input-field text-sm"
-                            placeholder="Rep Phone Number (e.g., 23203240304)"
+                            placeholder="Rep Phone Number (e.g., 23203240304 or 03240304)"
                           />
                           <input
                             type="url"
