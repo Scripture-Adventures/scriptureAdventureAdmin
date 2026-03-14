@@ -171,12 +171,13 @@ const CohortManagement: React.FC = () => {
     }
   }
 
-  const checkDuplicateEmails = async (emails: string[]) => {
+  const checkDuplicateEmailsInCohort = async (emails: string[], cohortId: number) => {
     try {
       const { data, error } = await supabase
         .from('taster_members')
         .select('email')
         .in('email', emails)
+        .eq('current_cohort_id', cohortId)
 
       if (error) throw error
       return data?.map(row => row.email) || []
@@ -213,10 +214,11 @@ const CohortManagement: React.FC = () => {
         return
       }
 
-      // Check for duplicates in database
-      const dbDuplicateEmails = await checkDuplicateEmails(emails)
-      if (dbDuplicateEmails.length > 0) {
-        setError(`Duplicate emails found in database: ${dbDuplicateEmails.join(', ')}`)
+      // Check for duplicates in this cohort only (same email in same cohort not allowed)
+      const cohortId = parseInt(formData.id)
+      const cohortDuplicateEmails = await checkDuplicateEmailsInCohort(emails, cohortId)
+      if (cohortDuplicateEmails.length > 0) {
+        setError(`Duplicate emails already in this cohort: ${cohortDuplicateEmails.join(', ')}`)
         setUploadingCsv(false)
         return
       }
