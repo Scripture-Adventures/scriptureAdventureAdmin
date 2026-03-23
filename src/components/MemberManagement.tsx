@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase, CurrentCohort, TasterMember, MainMember } from '../lib/supabase'
-import { Users, Edit, Trash2, X, UserPlus, UserCheck, Settings, Search, Upload, FileText } from 'lucide-react'
+import { Users, Edit, Trash2, X, UserPlus, UserCheck, Settings, Search, Upload, FileText, CheckSquare, Square } from 'lucide-react'
 
 const MemberManagement: React.FC = () => {
   const { user, signOut } = useAuth()
@@ -22,6 +22,17 @@ const MemberManagement: React.FC = () => {
   const [csvData, setCsvData] = useState<any[]>([])
   const [csvUploading, setCsvUploading] = useState(false)
   const [csvSelectedCohort, setCsvSelectedCohort] = useState<string>('8')
+
+  /** Promote taster → main: target cohort, circle, single or bulk list */
+  const [promotionModal, setPromotionModal] = useState<{
+    members: TasterMember[]
+  } | null>(null)
+  const [promotionCohortId, setPromotionCohortId] = useState('')
+  const [promotionCircleNumber, setPromotionCircleNumber] = useState('')
+
+  /** Main tab: mark isincurrentcohort false for members not in selected cohort */
+  const [mainMemberSelection, setMainMemberSelection] = useState<Set<string>>(new Set())
+  const [bulkNotCurrentSaving, setBulkNotCurrentSaving] = useState(false)
 
   // Form data for main members
   const [mainMemberForm, setMainMemberForm] = useState({
@@ -66,6 +77,10 @@ const MemberManagement: React.FC = () => {
     fetchData()
   }, [])
 
+  useEffect(() => {
+    setMainMemberSelection(new Set())
+  }, [selectedCohort])
+
   // Function to get available circles for a cohort
   const getAvailableCircles = (cohortId: string) => {
     if (!cohortId) {
@@ -92,6 +107,61 @@ const MemberManagement: React.FC = () => {
     }
   }
 
+  const getCircleOptionsForCohort = (cohortIdStr: string): string[] => {
+    if (!cohortIdStr) return []
+    const cohort = cohorts.find(c => c.id?.toString() === cohortIdStr)
+    if (!cohort || !cohort.circles || !Array.isArray(cohort.circles)) return []
+    return cohort.circles
+      .map((circle: any, index: number) => {
+        if (typeof circle === 'string' && circle.trim() !== '') return (index + 1).toString()
+        if (typeof circle === 'object' && circle !== null && circle.circle_whatsapp_link?.trim() !== '')
+          return (index + 1).toString()
+        return null
+      })
+      .filter((c): c is string => c !== null)
+  }
+
+  const findMainMemberByEmail = async (email: string | null | undefined): Promise<MainMember | null> => {
+    if (!email?.trim()) return null
+    const em = email.trim()
+    const { data: exact } = await supabase.from('main_members').select('*').eq('email', em).maybeSingle()
+    if (exact) return exact as MainMember
+    const { data: rows } = await supabase.from('main_members').select('*').ilike('email', em)
+    if (rows?.length) {
+      const lower = em.toLowerCase()
+      return (rows.find(r => r.email?.toLowerCase() === lower) || rows[0]) as MainMember
+    }
+    return null
+  }
+
+  const getNextSaIndexForCohort = async (cohortIdNum: number): Promise<number> => {
+    const padded = cohortIdNum.toString().padStart(3, '0')
+    const prefix = `SA/${padded}/`
+    const { data } = await supabase.from('main_members').select('sanumber').like('sanumber', `${prefix}%`)
+    let max = 0
+    for (const row of data || []) {
+      const sn = row.sanumber
+      if (!sn?.startsWith(prefix)) continue
+      const m = sn.match(/SA\/\d+\/(\d+)$/)
+      if (m) max = Math.max(max, parseInt(m[1], 10))
+    }
+    return max + 1
+  }
+
+  const refreshCohortMemberCount = async (cohortId: number) => {
+    try {
+      const { data, error } = await supabase.from('main_members').select('id').eq('current_cohort_id', cohortId)
+      if (error) throw error
+      const total = data?.length ?? 0
+      await supabase
+        .from('current_cohort')
+        .update({ member_count: total, updated_at: new Date().toISOString() })
+        .eq('id', cohortId)
+      setCohorts(prev => prev.map(c => (c.id === cohortId ? { ...c, member_count: total } : c)))
+    } catch (e) {
+      console.error('refreshCohortMemberCount', e)
+    }
+  }
 
   const fetchData = async () => {
     try {
@@ -428,311 +498,254 @@ const MemberManagement: React.FC = () => {
     }
   }
 
-  const handlePromoteToMain = async (tasterMember: TasterMember) => {
-    if (!confirm(`Are you sure you want to promote ${tasterMember.firstname} ${tasterMember.lastname} to a main member? This will create a new main member account.`)) return
-
-    setSaving(true)
-    setError('')
-
-    try {
-      // Create auth user for the main member
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: tasterMember.email || '',
-        password: 'Adventure',
-        options: {
-          data: {
-            first_name: tasterMember.firstname,
-            last_name: tasterMember.lastname
-          }
-        }
-      })
-
-      if (authError) {
-        console.error('Auth error:', authError)
-        throw new Error(`Failed to create user account: ${authError.message}`)
-      }
-
-      if (!authData.user) {
-        throw new Error('Failed to create user account: No user data returned')
-      }
-
-      // Generate SA number for the main member
-      const cohortId = tasterMember.current_cohort_id?.toString() || '001'
-      const paddedCohort = cohortId.padStart(3, '0')
-      const existingMembers = mainMembers.filter(m => m.sanumber?.startsWith(`SA/${paddedCohort}/`))
-      const nextIndex = existingMembers.length + 1
-      const paddedIndex = nextIndex.toString().padStart(3, '0')
-      const sanumber = `SA/${paddedCohort}/${paddedIndex}`
-
-      // Create main member data
-      const mainMemberData = {
-        id: authData.user.id,
-        firstname: tasterMember.firstname,
-        lastname: tasterMember.lastname,
-        email: tasterMember.email,
-        phonenumber: tasterMember.Confirm_Phone_number,
-        whatsapp: tasterMember.Confirm_Phone_number ? `https://wa.me/${tasterMember.Confirm_Phone_number}` : '',
-        bio: `Promoted from taster member (SAT: ${tasterMember.satnumber})`,
-        fcmtoken: '',
-        partnerid: '',
-        repid: '',
-        role: 'member',
-        sanumber,
-        status: 'active',
-        circle_number: '',
-        probationvisits: 0,
-        plancreated: false,
-        isincurrentcohort: true,
-        prevsanumbers: [],
-        previousgroups: [],
-        current_cohort_id: tasterMember.current_cohort_id
-      }
-
-      // Insert main member with retry logic
-      let insertRetries = 0
-      const maxInsertRetries = 5
-      let insertSuccess = false
-      let data = null
-      let error = null
-
-      while (insertRetries < maxInsertRetries && !insertSuccess) {
-        const result = await supabase
-          .from('main_members')
-          .insert([mainMemberData])
-          .select()
-
-        if (result.error) {
-          if (result.error.message.includes('foreign key constraint')) {
-            await new Promise(resolve => setTimeout(resolve, 2000))
-            insertRetries++
-          } else {
-            error = result.error
-            break
-          }
-        } else {
-          data = result.data
-          insertSuccess = true
-        }
-      }
-
-      if (!insertSuccess && error) {
-        console.error('Supabase error:', error)
-        throw error
-      }
-
-      if (data && data.length > 0) {
-        // Update member_count and taster_member_count in current_cohort
-        if (mainMemberData.current_cohort_id) {
-          try {
-            const [mainMembersResult, tasterMembersResult] = await Promise.all([
-              supabase.from('main_members').select('id').eq('current_cohort_id', mainMemberData.current_cohort_id),
-              supabase.from('taster_members').select('id').eq('current_cohort_id', mainMemberData.current_cohort_id)
-            ])
-
-            if (mainMembersResult.error) throw mainMembersResult.error
-            if (tasterMembersResult.error) throw tasterMembersResult.error
-
-            const totalMainMembers = mainMembersResult.data?.length || 0
-            const totalTasterMembers = tasterMembersResult.data?.length || 0
-
-            const { error: cohortError } = await supabase
-              .from('current_cohort')
-              .update({ 
-                member_count: totalMainMembers,
-                taster_member_count: totalTasterMembers,
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', mainMemberData.current_cohort_id)
-
-            if (cohortError) throw cohortError
-          } catch (error) {
-            console.error('Error updating cohort member counts:', error)
-          }
-        }
-
-        alert(`Successfully promoted ${tasterMember.firstname} ${tasterMember.lastname} to main member!\nSA Number: ${sanumber}`)
-        
-        // Add the promoted member to main members list
-        setMainMembers(prev => [data[0], ...prev])
-      }
-    } catch (error: any) {
-      console.error('Error promoting taster member:', error)
-      setError(error.message || 'Failed to promote taster member')
-    } finally {
-      setSaving(false)
-    }
+  type PromoteResult = {
+    ok: boolean
+    error?: string
+    created?: MainMember
+    updated?: MainMember
+    oldCohortId?: number | null
   }
 
-  const handleBulkPromoteToMain = async () => {
+  const promoteSingleTasterMember = async (
+    tasterMember: TasterMember,
+    cohortIdNum: number,
+    circleNumber: string,
+    allocSaIndex: () => number
+  ): Promise<PromoteResult> => {
+    const paddedCohort = cohortIdNum.toString().padStart(3, '0')
+    let existing = await findMainMemberByEmail(tasterMember.email)
+
+    const waFromPhone = (phone: string | null | undefined) => {
+      if (!phone) return ''
+      const clean = phone.replace(/\D/g, '')
+      return clean.length >= 10 ? `https://wa.me/${clean}` : ''
+    }
+
+    if (existing) {
+      const idx = allocSaIndex()
+      const paddedIndex = idx.toString().padStart(3, '0')
+      const newSanumber = `SA/${paddedCohort}/${paddedIndex}`
+      const prevs = [...(existing.prevsanumbers || [])]
+      const oldSan = existing.sanumber
+      if (oldSan && !prevs.includes(oldSan)) prevs.push(oldSan)
+
+      const circle =
+        circleNumber.trim() || (existing.circle_number ?? '') || ''
+
+      const updates = {
+        sanumber: newSanumber,
+        circle_number: circle || null,
+        isincurrentcohort: true,
+        prevsanumbers: prevs,
+        current_cohort_id: cohortIdNum,
+        firstname: tasterMember.firstname ?? existing.firstname,
+        lastname: tasterMember.lastname ?? existing.lastname,
+        phonenumber: tasterMember.Confirm_Phone_number ?? existing.phonenumber,
+        whatsapp:
+          waFromPhone(tasterMember.Confirm_Phone_number) || existing.whatsapp || '',
+        bio: existing.bio
+          ? `${existing.bio}\nRe-enrolled from taster (SAT: ${tasterMember.satnumber})`
+          : `Promoted from taster member (SAT: ${tasterMember.satnumber})`
+      }
+
+      const oldCohortId = existing.current_cohort_id
+      const { data, error } = await supabase.from('main_members').update(updates).eq('id', existing.id).select()
+
+      if (error) return { ok: false, error: error.message, oldCohortId }
+      const row = data?.[0] as MainMember | undefined
+      if (!row) return { ok: false, error: 'No row returned after update', oldCohortId }
+      return { ok: true, updated: row, oldCohortId }
+    }
+
+    // No main_members row — create auth + insert (normal path)
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email: tasterMember.email || '',
+      password: 'Adventure',
+      options: {
+        data: {
+          first_name: tasterMember.firstname,
+          last_name: tasterMember.lastname
+        }
+      }
+    })
+
+    if (authError) {
+      const msg = authError.message || ''
+      if (/already registered|already been registered|User already registered/i.test(msg)) {
+        existing = await findMainMemberByEmail(tasterMember.email)
+        if (existing) {
+          return promoteSingleTasterMember(tasterMember, cohortIdNum, circleNumber, allocSaIndex)
+        }
+      }
+      return { ok: false, error: `Failed to create user account: ${authError.message}` }
+    }
+
+    if (!authData.user) {
+      return { ok: false, error: 'Failed to create user account: No user data returned' }
+    }
+
+    const idx = allocSaIndex()
+    const paddedIndex = idx.toString().padStart(3, '0')
+    const sanumber = `SA/${paddedCohort}/${paddedIndex}`
+
+    const mainMemberData = {
+      id: authData.user.id,
+      firstname: tasterMember.firstname,
+      lastname: tasterMember.lastname,
+      email: tasterMember.email,
+      phonenumber: tasterMember.Confirm_Phone_number,
+      whatsapp: waFromPhone(tasterMember.Confirm_Phone_number),
+      bio: `Promoted from taster member (SAT: ${tasterMember.satnumber})`,
+      fcmtoken: '',
+      partnerid: '',
+      repid: '',
+      role: 'member',
+      sanumber,
+      status: 'active',
+      circle_number: circleNumber.trim() || '',
+      probationvisits: 0,
+      plancreated: false,
+      isincurrentcohort: true,
+      prevsanumbers: [] as string[],
+      previousgroups: [] as string[],
+      current_cohort_id: cohortIdNum
+    }
+
+    let insertRetries = 0
+    const maxInsertRetries = 5
+    let insertSuccess = false
+    let data: MainMember[] | null = null
+    let lastErr: Error | null = null
+
+    while (insertRetries < maxInsertRetries && !insertSuccess) {
+      const result = await supabase.from('main_members').insert([mainMemberData]).select()
+      if (result.error) {
+        if (result.error.message.includes('foreign key constraint')) {
+          await new Promise(r => setTimeout(r, 2000))
+          insertRetries++
+        } else {
+          lastErr = result.error as Error
+          break
+        }
+      } else {
+        data = result.data as MainMember[]
+        insertSuccess = true
+      }
+    }
+
+    if (!insertSuccess && lastErr) return { ok: false, error: (lastErr as any).message }
+    if (!data?.length) return { ok: false, error: 'Insert did not return a row' }
+
+    return { ok: true, created: data[0] }
+  }
+
+  const runPromotionBatch = async (members: TasterMember[], cohortIdNum: number, circleNumber: string) => {
+    const idxRef = { current: await getNextSaIndexForCohort(cohortIdNum) }
+    const alloc = () => idxRef.current++
+
+    const failed: { member: TasterMember; error: string }[] = []
+    const cohortsToRefresh = new Set<number>([cohortIdNum])
+
+    let nextMainState = [...mainMembers]
+
+    for (const tm of members) {
+      const res = await promoteSingleTasterMember(tm, cohortIdNum, circleNumber, alloc)
+      if (!res.ok) {
+        failed.push({ member: tm, error: res.error || 'Unknown error' })
+        continue
+      }
+      if (res.updated) {
+        if (res.oldCohortId && res.oldCohortId !== cohortIdNum) cohortsToRefresh.add(res.oldCohortId)
+        nextMainState = nextMainState.map(m => (m.id === res.updated!.id ? { ...m, ...res.updated } : m))
+        if (!nextMainState.some(m => m.id === res.updated!.id)) {
+          nextMainState = [res.updated!, ...nextMainState]
+        }
+      }
+      if (res.created) {
+        nextMainState = [res.created, ...nextMainState.filter(m => m.id !== res.created!.id)]
+      }
+    }
+
+    setMainMembers(nextMainState)
+
+    for (const cid of cohortsToRefresh) {
+      await refreshCohortMemberCount(cid)
+    }
+
+    try {
+      const { data: tasterRows } = await supabase.from('taster_members').select('id').eq('current_cohort_id', cohortIdNum)
+      const totalTaster = tasterRows?.length ?? 0
+      await supabase
+        .from('current_cohort')
+        .update({ taster_member_count: totalTaster, updated_at: new Date().toISOString() })
+        .eq('id', cohortIdNum)
+    } catch (e) {
+      console.error('taster count refresh', e)
+    }
+
+    return { failed, successCount: members.length - failed.length }
+  }
+
+  const openPromotionModal = (members: TasterMember[]) => {
+    if (members.length === 0) return
+    const defaultCohort =
+      selectedCohort !== 'all'
+        ? selectedCohort
+        : members[0].current_cohort_id?.toString() || ''
+    setPromotionCohortId(defaultCohort)
+    const circles = getCircleOptionsForCohort(defaultCohort)
+    setPromotionCircleNumber(circles[0] || '')
+    setPromotionModal({ members })
+  }
+
+  const handlePromoteToMain = (tasterMember: TasterMember) => {
+    openPromotionModal([tasterMember])
+  }
+
+  const handleBulkPromoteToMain = () => {
     if (qualifiedTasterMembers.length === 0) {
       setError('No qualified members to promote')
       return
     }
+    openPromotionModal(qualifiedTasterMembers)
+  }
 
-    if (!confirm(`Are you sure you want to promote ${qualifiedTasterMembers.length} qualified taster members to main members? This will create new main member accounts for all of them.`)) return
+  const confirmPromotion = async () => {
+    if (!promotionModal) return
+    const cohortIdNum = parseInt(promotionCohortId, 10)
+    if (!promotionCohortId || Number.isNaN(cohortIdNum)) {
+      setError('Select a target cohort for promotion.')
+      return
+    }
+
+    const n = promotionModal.members.length
+    const msg =
+      n === 1
+        ? `Promote ${promotionModal.members[0].firstname} ${promotionModal.members[0].lastname}? Existing main accounts will be updated with a new SA number for this cohort; new accounts will be created if none exist.`
+        : `Promote ${n} qualified members? Existing main accounts will be updated; others will be created.`
+
+    if (!confirm(msg)) return
 
     setSaving(true)
     setError('')
-
     try {
-      const promotedMembers: (MainMember & { originalTaster: TasterMember })[] = []
-      const failedMembers: { member: TasterMember; error: string }[] = []
-
-      for (const tasterMember of qualifiedTasterMembers) {
-        try {
-          // Create auth user for the main member
-          const { data: authData, error: authError } = await supabase.auth.signUp({
-            email: tasterMember.email || '',
-            password: 'Adventure',
-            options: {
-              data: {
-                first_name: tasterMember.firstname,
-                last_name: tasterMember.lastname
-              }
-            }
-          })
-
-          if (authError) {
-            console.error('Auth error for', tasterMember.firstname, authError)
-            failedMembers.push({ member: tasterMember, error: authError.message })
-            continue
-          }
-
-          if (!authData.user) {
-            failedMembers.push({ member: tasterMember, error: 'No user data returned' })
-            continue
-          }
-
-          // Generate SA number for the main member
-          const cohortId = tasterMember.current_cohort_id?.toString() || '001'
-          const paddedCohort = cohortId.padStart(3, '0')
-          const existingMembers = mainMembers.filter(m => m.sanumber?.startsWith(`SA/${paddedCohort}/`))
-          const nextIndex: number = existingMembers.length + promotedMembers.length + 1
-          const paddedIndex: string = nextIndex.toString().padStart(3, '0')
-          const sanumber: string = `SA/${paddedCohort}/${paddedIndex}`
-
-          // Create main member data
-          const mainMemberData: MainMember = {
-            id: authData.user.id,
-            firstname: tasterMember.firstname,
-            lastname: tasterMember.lastname,
-            email: tasterMember.email,
-            phonenumber: tasterMember.Confirm_Phone_number,
-            whatsapp: tasterMember.Confirm_Phone_number ? `https://wa.me/${tasterMember.Confirm_Phone_number}` : '',
-            bio: `Promoted from taster member (SAT: ${tasterMember.satnumber})`,
-            fcmtoken: '',
-            partnerid: '',
-            repid: '',
-            role: 'member',
-            sanumber,
-            status: 'active',
-            circle_number: '',
-            probationvisits: 0,
-            plancreated: false,
-            isincurrentcohort: true,
-            prevsanumbers: [],
-            previousgroups: [],
-            current_cohort_id: tasterMember.current_cohort_id
-          }
-
-          // Insert main member with retry logic
-          let insertRetries = 0
-          const maxInsertRetries = 5
-          let insertSuccess = false
-          let data = null
-          let error = null
-
-          while (insertRetries < maxInsertRetries && !insertSuccess) {
-            const result = await supabase
-              .from('main_members')
-              .insert([mainMemberData])
-              .select()
-
-            if (result.error) {
-              if (result.error.message.includes('foreign key constraint')) {
-                await new Promise(resolve => setTimeout(resolve, 2000))
-                insertRetries++
-              } else {
-                error = result.error
-                break
-              }
-            } else {
-              data = result.data
-              insertSuccess = true
-            }
-          }
-
-          if (!insertSuccess && error) {
-            console.error('Supabase error for', tasterMember.firstname, error)
-            failedMembers.push({ member: tasterMember, error: error.message })
-            continue
-          }
-
-          if (data && data.length > 0) {
-            promotedMembers.push({ ...data[0], originalTaster: tasterMember })
-          }
-        } catch (error: any) {
-          console.error('Error promoting', tasterMember.firstname, error)
-          failedMembers.push({ member: tasterMember, error: error.message })
-        }
-      }
-
-      // Update local state with all promoted members
-      if (promotedMembers.length > 0) {
-        // Update cohort member counts
-        const cohortUpdates = new Map()
-        promotedMembers.forEach(member => {
-          if (member.current_cohort_id) {
-            const currentCount = cohortUpdates.get(member.current_cohort_id) || 0
-            cohortUpdates.set(member.current_cohort_id, currentCount + 1)
-          }
-        })
-
-        // Update each affected cohort
-        for (const [cohortId] of cohortUpdates) {
-          try {
-            const { data: existingMembers, error: countError } = await supabase
-              .from('main_members')
-              .select('id')
-              .eq('current_cohort_id', cohortId)
-
-            if (countError) throw countError
-
-            const totalMainMembers = existingMembers?.length || 0
-
-            const { error: cohortError } = await supabase
-              .from('current_cohort')
-              .update({ 
-                member_count: totalMainMembers,
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', cohortId)
-
-            if (cohortError) throw cohortError
-          } catch (error) {
-            console.error('Error updating cohort member count:', error)
-          }
-        }
-      }
-
-      // Show results
-      let message = `Successfully promoted ${promotedMembers.length} members to main members!`
-      if (failedMembers.length > 0) {
-        message += `\n\nFailed to promote ${failedMembers.length} members:\n`
-        failedMembers.forEach(failed => {
-          message += `- ${failed.member.firstname} ${failed.member.lastname}: ${failed.error}\n`
+      const { failed, successCount } = await runPromotionBatch(
+        promotionModal.members,
+        cohortIdNum,
+        promotionCircleNumber
+      )
+      setPromotionModal(null)
+      let message = `Done: ${successCount} member(s) promoted or updated.`
+      if (failed.length > 0) {
+        message += `\n\nFailed (${failed.length}):\n`
+        failed.forEach(f => {
+          message += `- ${f.member.firstname} ${f.member.lastname}: ${f.error}\n`
         })
       }
-      
       alert(message)
-      
-      // Add all promoted members to main members list
-      if (promotedMembers.length > 0) {
-        setMainMembers(prev => [...promotedMembers, ...prev])
-      }
-    } catch (error: any) {
-      console.error('Error in bulk promotion:', error)
-      setError(error.message || 'Failed to promote members')
+    } catch (e: any) {
+      console.error(e)
+      setError(e.message || 'Promotion failed')
     } finally {
       setSaving(false)
     }
@@ -1249,16 +1262,86 @@ const MemberManagement: React.FC = () => {
   })
 
   const qualifiedTasterMembers = filteredTasterMembers.filter(member => {
-    // Check if member meets qualification criteria
     const isQualified = (member.total_submission || 0) >= 3 && member.sermon_submitted
-    
-    // Check if member is not already a main member (by email)
-    const isNotMainMember = !mainMembers.some(mainMember => 
-      mainMember.email?.toLowerCase() === member.email?.toLowerCase()
+    if (!isQualified) return false
+
+    // Hide if a main member with this email is already on the same cohort as this taster row
+    const main = mainMembers.find(
+      m => m.email?.toLowerCase() === member.email?.toLowerCase()
     )
-    
-    return isQualified && isNotMainMember
+    if (
+      main &&
+      main.current_cohort_id != null &&
+      member.current_cohort_id != null &&
+      main.current_cohort_id === member.current_cohort_id
+    ) {
+      return false
+    }
+
+    return true
   })
+
+  /** When a cohort is selected, main tab lists members in that cohort — all visible rows can be bulk-updated */
+  const bulkSelectableMainMembers =
+    selectedCohort !== 'all' ? filteredMainMembers : []
+
+  const getExistingMainForTasterEmail = (email: string | null | undefined) =>
+    mainMembers.find(m => m.email?.toLowerCase() === email?.toLowerCase())
+
+  const toggleMainMemberSelected = (id: string) => {
+    setMainMemberSelection(prev => {
+      const n = new Set(prev)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
+      return n
+    })
+  }
+
+  const selectAllBulkSelectableMainMembers = () => {
+    setMainMemberSelection(new Set(bulkSelectableMainMembers.map(m => m.id)))
+  }
+
+  const clearMainMemberSelection = () => setMainMemberSelection(new Set())
+
+  const applyMarkNotInCurrentCohort = async (ids: string[]) => {
+    if (ids.length === 0) {
+      setError('No members selected.')
+      return
+    }
+    if (
+      !confirm(
+        `Set "in current cohort" to false for ${ids.length} member(s)? They will stay on their cohort but isincurrentcohort will be false.`
+      )
+    )
+      return
+
+    setBulkNotCurrentSaving(true)
+    setError('')
+    try {
+      const { data: updatedRows, error } = await supabase
+        .from('main_members')
+        .update({ isincurrentcohort: false })
+        .in('id', ids)
+        .select('id')
+
+      if (error) throw error
+      const n = updatedRows?.length ?? 0
+      if (n === 0) {
+        setError(
+          'No rows were updated. Check Supabase RLS policies allow updating isincurrentcohort on main_members for your admin user.'
+        )
+        return
+      }
+
+      setMainMembers(prev => prev.map(m => (ids.includes(m.id) ? { ...m, isincurrentcohort: false } : m)))
+      clearMainMemberSelection()
+      alert(`Updated isincurrentcohort to false for ${n} member(s).`)
+    } catch (e: any) {
+      setError(e.message || 'Update failed')
+    } finally {
+      setBulkNotCurrentSaving(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -1425,14 +1508,89 @@ const MemberManagement: React.FC = () => {
         {/* Main Members Table */}
         {activeTab === 'main' && (
           <div className="card">
-            <div className="px-6 py-4 border-b border-gray-200">
-              <h3 className="text-lg font-medium text-gray-900">Main Members</h3>
+            <div className="px-6 py-4 border-b border-gray-200 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <h3 className="text-lg font-medium text-gray-900">Main Members</h3>
+                {selectedCohort !== 'all' && (
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="text-gray-600">
+                      <strong>{bulkSelectableMainMembers.length}</strong> main member
+                      {bulkSelectableMainMembers.length !== 1 ? 's' : ''} in this list — set{' '}
+                      <code className="text-xs bg-gray-100 px-1 rounded">isincurrentcohort</code> to{' '}
+                      <strong>false</strong> for selected rows
+                    </span>
+                    <button
+                      type="button"
+                      onClick={selectAllBulkSelectableMainMembers}
+                      disabled={bulkSelectableMainMembers.length === 0}
+                      className="text-primary-600 hover:text-primary-800 font-medium disabled:opacity-40"
+                    >
+                      Select all in list
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearMainMemberSelection}
+                      className="text-gray-600 hover:text-gray-800"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      type="button"
+                      disabled={mainMemberSelection.size === 0 || bulkNotCurrentSaving}
+                      onClick={() => applyMarkNotInCurrentCohort(Array.from(mainMemberSelection))}
+                      className="px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 text-sm font-medium"
+                    >
+                      {bulkNotCurrentSaving
+                        ? 'Updating…'
+                        : `Set isincurrentcohort = false (${mainMemberSelection.size} selected)`}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={bulkNotCurrentSaving || bulkSelectableMainMembers.length === 0}
+                      onClick={() =>
+                        applyMarkNotInCurrentCohort(bulkSelectableMainMembers.map(m => m.id))
+                      }
+                      className="px-3 py-1.5 rounded-lg border border-amber-600 text-amber-800 hover:bg-amber-50 text-sm font-medium disabled:opacity-50"
+                    >
+                      Apply to all in list ({bulkSelectableMainMembers.length})
+                    </button>
+                  </div>
+                )}
+              </div>
+              {selectedCohort !== 'all' && (
+                <p className="text-xs text-gray-500">
+                  Pick a cohort in the filter above, then use the checkboxes (or <strong>Select all in list</strong>) and
+                  confirm to update Supabase. Search narrows who appears in the list.
+                </p>
+              )}
             </div>
             <div className="overflow-x-auto">
               {filteredMainMembers.length > 0 ? (
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
+                      {selectedCohort !== 'all' && (
+                        <th className="px-3 py-3 w-12 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const ids = new Set(bulkSelectableMainMembers.map(m => m.id))
+                              const allSelected =
+                                bulkSelectableMainMembers.length > 0 &&
+                                bulkSelectableMainMembers.every(m => mainMemberSelection.has(m.id))
+                              if (allSelected) clearMainMemberSelection()
+                              else setMainMemberSelection(ids)
+                            }}
+                            className="text-primary-600 hover:text-primary-800 text-xs font-medium"
+                            title="Select or deselect all rows in this list"
+                          >
+                            {bulkSelectableMainMembers.length > 0 &&
+                            bulkSelectableMainMembers.every(m => mainMemberSelection.has(m.id))
+                              ? 'Deselect'
+                              : 'All'}
+                          </button>
+                        </th>
+                      )}
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Name
                       </th>
@@ -1459,6 +1617,22 @@ const MemberManagement: React.FC = () => {
                   <tbody className="bg-white divide-y divide-gray-200">
                     {filteredMainMembers.map((member) => (
                       <tr key={member.id} className="hover:bg-gray-50">
+                        {selectedCohort !== 'all' && (
+                          <td className="px-3 py-4 whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => toggleMainMemberSelected(member.id)}
+                              className="text-gray-600 hover:text-primary-600"
+                              title="Select for bulk: set isincurrentcohort to false"
+                            >
+                              {mainMemberSelection.has(member.id) ? (
+                                <CheckSquare className="h-5 w-5 text-primary-600" />
+                              ) : (
+                                <Square className="h-5 w-5" />
+                              )}
+                            </button>
+                          </td>
+                        )}
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-sm font-medium text-gray-900">
                             {member.firstname} {member.lastname}
@@ -1657,7 +1831,13 @@ const MemberManagement: React.FC = () => {
                               <button
                                 onClick={() => handlePromoteToMain(member)}
                                 className="text-green-600 hover:text-green-900"
-                                title="Promote to Main Member"
+                                title={
+                                  mainMembers.some(
+                                    m => m.email?.toLowerCase() === member.email?.toLowerCase()
+                                  )
+                                    ? 'Re-enroll / update existing main member'
+                                    : 'Promote to main (new account)'
+                                }
                               >
                                 <UserPlus className="h-4 w-4" />
                               </button>
@@ -1743,6 +1923,9 @@ const MemberManagement: React.FC = () => {
                         Cohort
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Main account
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Submissions
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1757,7 +1940,9 @@ const MemberManagement: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {qualifiedTasterMembers.map((member) => (
+                    {qualifiedTasterMembers.map((member) => {
+                      const existingMain = getExistingMainForTasterEmail(member.email)
+                      return (
                       <tr key={member.id} className="hover:bg-gray-50">
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-sm font-medium text-gray-900">
@@ -1778,6 +1963,20 @@ const MemberManagement: React.FC = () => {
                             {cohorts.find(c => c.id === member.current_cohort_id)?.nomenclature || 
                              `Cohort ${member.current_cohort_id}`}
                           </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {existingMain ? (
+                            <div className="text-xs">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full font-medium bg-indigo-100 text-indigo-800">
+                                Existing
+                              </span>
+                              <div className="text-gray-600 mt-1 font-mono">{existingMain.sanumber || '—'}</div>
+                            </div>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                              New
+                            </span>
+                          )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-sm font-medium text-gray-900">
@@ -1805,7 +2004,11 @@ const MemberManagement: React.FC = () => {
                             <button
                               onClick={() => handlePromoteToMain(member)}
                               className="text-green-600 hover:text-green-900"
-                              title="Promote to Main Member"
+                              title={
+                                existingMain
+                                  ? 'Re-enroll: update existing main member (new SA, cohort, circle)'
+                                  : 'Promote: create new main member'
+                              }
                             >
                               <UserPlus className="h-4 w-4" />
                             </button>
@@ -1818,7 +2021,7 @@ const MemberManagement: React.FC = () => {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               ) : (
@@ -1828,7 +2031,7 @@ const MemberManagement: React.FC = () => {
                   <p className="text-gray-600 mb-4">
                     {searchQuery 
                       ? `No qualified members match your search "${searchQuery}". Try adjusting your search terms.`
-                      : 'No taster members have met the qualification criteria yet (3+ submissions and sermon submitted).'
+                      : 'No taster members have met the qualification criteria yet (3+ submissions and sermon submitted). Returning members with an existing main account will appear here too once qualified.'
                     }
                   </p>
                 </div>
@@ -2452,6 +2655,77 @@ const MemberManagement: React.FC = () => {
                     </button>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {promotionModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[10000]">
+            <div className="bg-white rounded-lg max-w-md w-full p-6 shadow-xl">
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                Promote to main ({promotionModal.members.length}{' '}
+                {promotionModal.members.length === 1 ? 'member' : 'members'})
+              </h3>
+              <p className="text-sm text-gray-600 mb-4">
+                Pick the cohort for the new SA number (e.g. SA/009/012). If a main member with the same email
+                already exists, their row is updated (previous SA appended to prevsanumbers); otherwise a new account
+                is created.
+              </p>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Target cohort</label>
+                  <select
+                    value={promotionCohortId}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setPromotionCohortId(v)
+                      const opts = getCircleOptionsForCohort(v)
+                      setPromotionCircleNumber(opts[0] || '')
+                    }}
+                    className="input-field w-full"
+                  >
+                    <option value="">Select cohort…</option>
+                    {cohorts.map(c => (
+                      <option key={c.id} value={c.id?.toString() || ''}>
+                        {c.nomenclature || `Cohort ${c.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Circle number</label>
+                  <select
+                    value={promotionCircleNumber}
+                    onChange={(e) => setPromotionCircleNumber(e.target.value)}
+                    className="input-field w-full"
+                  >
+                    <option value="">None — keep existing when updating</option>
+                    {getCircleOptionsForCohort(promotionCohortId).map(num => (
+                      <option key={num} value={num}>
+                        Circle {num}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => !saving && setPromotionModal(null)}
+                  disabled={saving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={confirmPromotion}
+                  disabled={saving || !promotionCohortId}
+                >
+                  {saving ? 'Working…' : 'Confirm promotion'}
+                </button>
               </div>
             </div>
           </div>
