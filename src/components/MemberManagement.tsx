@@ -1303,14 +1303,14 @@ const MemberManagement: React.FC = () => {
 
   const clearMainMemberSelection = () => setMainMemberSelection(new Set())
 
-  const applyMarkNotInCurrentCohort = async (ids: string[]) => {
+  const applySetCurrentCohortFlag = async (ids: string[], value: boolean) => {
     if (ids.length === 0) {
       setError('No members selected.')
       return
     }
     if (
       !confirm(
-        `Set "in current cohort" to false for ${ids.length} member(s)? They will stay on their cohort but isincurrentcohort will be false.`
+        `Set isincurrentcohort to ${value ? 'true' : 'false'} for ${ids.length} member(s)?`
       )
     )
       return
@@ -1320,7 +1320,7 @@ const MemberManagement: React.FC = () => {
     try {
       const { data: updatedRows, error } = await supabase
         .from('main_members')
-        .update({ isincurrentcohort: false })
+        .update({ isincurrentcohort: value })
         .in('id', ids)
         .select('id')
 
@@ -1333,9 +1333,9 @@ const MemberManagement: React.FC = () => {
         return
       }
 
-      setMainMembers(prev => prev.map(m => (ids.includes(m.id) ? { ...m, isincurrentcohort: false } : m)))
+      setMainMembers(prev => prev.map(m => (ids.includes(m.id) ? { ...m, isincurrentcohort: value } : m)))
       clearMainMemberSelection()
-      alert(`Updated isincurrentcohort to false for ${n} member(s).`)
+      alert(`Updated isincurrentcohort to ${value ? 'true' : 'false'} for ${n} member(s).`)
     } catch (e: any) {
       setError(e.message || 'Update failed')
     } finally {
@@ -1517,7 +1517,7 @@ const MemberManagement: React.FC = () => {
                       <strong>{bulkSelectableMainMembers.length}</strong> main member
                       {bulkSelectableMainMembers.length !== 1 ? 's' : ''} in this list — set{' '}
                       <code className="text-xs bg-gray-100 px-1 rounded">isincurrentcohort</code> to{' '}
-                      <strong>false</strong> for selected rows
+                      <strong>true or false</strong> for selected rows
                     </span>
                     <button
                       type="button"
@@ -1537,22 +1537,42 @@ const MemberManagement: React.FC = () => {
                     <button
                       type="button"
                       disabled={mainMemberSelection.size === 0 || bulkNotCurrentSaving}
-                      onClick={() => applyMarkNotInCurrentCohort(Array.from(mainMemberSelection))}
+                      onClick={() => applySetCurrentCohortFlag(Array.from(mainMemberSelection), true)}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 text-sm font-medium"
+                    >
+                      {bulkNotCurrentSaving
+                        ? 'Updating…'
+                        : `Set true (${mainMemberSelection.size} selected)`}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={mainMemberSelection.size === 0 || bulkNotCurrentSaving}
+                      onClick={() => applySetCurrentCohortFlag(Array.from(mainMemberSelection), false)}
                       className="px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 text-sm font-medium"
                     >
                       {bulkNotCurrentSaving
                         ? 'Updating…'
-                        : `Set isincurrentcohort = false (${mainMemberSelection.size} selected)`}
+                        : `Set false (${mainMemberSelection.size} selected)`}
                     </button>
                     <button
                       type="button"
                       disabled={bulkNotCurrentSaving || bulkSelectableMainMembers.length === 0}
                       onClick={() =>
-                        applyMarkNotInCurrentCohort(bulkSelectableMainMembers.map(m => m.id))
+                        applySetCurrentCohortFlag(bulkSelectableMainMembers.map(m => m.id), true)
+                      }
+                      className="px-3 py-1.5 rounded-lg border border-emerald-600 text-emerald-800 hover:bg-emerald-50 text-sm font-medium disabled:opacity-50"
+                    >
+                      Set true for all ({bulkSelectableMainMembers.length})
+                    </button>
+                    <button
+                      type="button"
+                      disabled={bulkNotCurrentSaving || bulkSelectableMainMembers.length === 0}
+                      onClick={() =>
+                        applySetCurrentCohortFlag(bulkSelectableMainMembers.map(m => m.id), false)
                       }
                       className="px-3 py-1.5 rounded-lg border border-amber-600 text-amber-800 hover:bg-amber-50 text-sm font-medium disabled:opacity-50"
                     >
-                      Apply to all in list ({bulkSelectableMainMembers.length})
+                      Set false for all ({bulkSelectableMainMembers.length})
                     </button>
                   </div>
                 )}
