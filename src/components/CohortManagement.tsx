@@ -27,6 +27,7 @@ const CohortManagement: React.FC = () => {
     orientation_start_date: '',
     taster_start_date: '',
     taster_session_on: true,
+    end_of_cohort_wrap: false,
     circles: Array(20).fill({ circle_rep_whatsapp_contact: '', circle_whatsapp_link: '' }),
     sermon_link: ''
   })
@@ -407,6 +408,7 @@ const CohortManagement: React.FC = () => {
       orientation_start_date: cohort.orientation_start_date || '',
       taster_start_date: cohort.taster_start_date || '',
       taster_session_on: cohort.taster_session_on,
+      end_of_cohort_wrap: cohort.end_of_cohort_wrap ?? false,
       circles: circlesArray,
       sermon_link: cohort.sermon_link || ''
     })
@@ -444,6 +446,7 @@ const CohortManagement: React.FC = () => {
       orientation_start_date: '',
       taster_start_date: '',
       taster_session_on: true,
+      end_of_cohort_wrap: false,
       circles: Array(20).fill({ circle_rep_whatsapp_contact: '', circle_whatsapp_link: '' }),
       sermon_link: ''
     })
@@ -586,6 +589,17 @@ const CohortManagement: React.FC = () => {
                         className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
                       />
                       <label className="ml-2 text-sm text-gray-700">Taster Session On</label>
+                    </div>
+
+                    <div className="flex items-center">
+                      <input
+                        type="checkbox"
+                        name="end_of_cohort_wrap"
+                        checked={formData.end_of_cohort_wrap}
+                        onChange={handleInputChange}
+                        className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                      />
+                      <label className="ml-2 text-sm text-gray-700">End of Cohort Wrap</label>
                     </div>
 
                     <div>
@@ -873,6 +887,11 @@ const CohortManagement: React.FC = () => {
                     {cohort.taster_session_on && (
                       <div className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                         Taster Session On
+                      </div>
+                    )}
+                    {cohort.end_of_cohort_wrap && (
+                      <div className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                        End of Cohort Wrap
                       </div>
                     )}
                   </div>

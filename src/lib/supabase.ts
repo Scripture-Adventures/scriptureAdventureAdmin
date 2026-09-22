@@ -33,6 +33,7 @@ export type CurrentCohort = {
   orientation_start_date: string | null
   taster_start_date: string | null
   taster_session_on: boolean
+  end_of_cohort_wrap: boolean | null
   circles: (Circle | string)[] | null
   created_at: string
   updated_at: string
