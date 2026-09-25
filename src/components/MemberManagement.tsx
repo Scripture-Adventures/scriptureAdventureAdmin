@@ -34,6 +34,9 @@ const MemberManagement: React.FC = () => {
   const [mainMemberSelection, setMainMemberSelection] = useState<Set<string>>(new Set())
   const [bulkNotCurrentSaving, setBulkNotCurrentSaving] = useState(false)
 
+  /** Qualified tab: select which members to promote */
+  const [qualifiedSelection, setQualifiedSelection] = useState<Set<string>>(new Set())
+
   // Form data for main members
   const [mainMemberForm, setMainMemberForm] = useState({
     id: '',
@@ -80,6 +83,47 @@ const MemberManagement: React.FC = () => {
   useEffect(() => {
     setMainMemberSelection(new Set())
   }, [selectedCohort])
+
+  useEffect(() => {
+    setQualifiedSelection(new Set())
+  }, [selectedCohort, searchQuery, activeTab])
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  const isRateLimitError = (message: string) =>
+    /rate.?limit|too many requests|over_email_send_rate_limit|429/i.test(message)
+
+  /**
+   * auth.signUp switches the shared client session to the new user.
+   * Save and restore the admin session so the admin panel stays logged in.
+   */
+  const signUpPreservingAdminSession = async (
+    email: string,
+    password: string,
+    metadata?: Record<string, unknown>
+  ) => {
+    const {
+      data: { session: adminSession }
+    } = await supabase.auth.getSession()
+
+    const result = await supabase.auth.signUp({
+      email,
+      password,
+      options: { data: metadata }
+    })
+
+    if (adminSession?.access_token && adminSession?.refresh_token) {
+      const { error: restoreError } = await supabase.auth.setSession({
+        access_token: adminSession.access_token,
+        refresh_token: adminSession.refresh_token
+      })
+      if (restoreError) {
+        console.error('Failed to restore admin session after signUp:', restoreError)
+      }
+    }
+
+    return result
+  }
 
   // Function to get available circles for a cohort
   const getAvailableCircles = (cohortId: string) => {
@@ -230,16 +274,14 @@ const MemberManagement: React.FC = () => {
         )
       } else {
         // Create new member with auth user using signup
-        const { data: authData, error: authError } = await supabase.auth.signUp({
-          email: mainMemberForm.email,
-          password: 'Adventure',
-          options: {
-            data: {
-              first_name: mainMemberForm.firstname,
-              last_name: mainMemberForm.lastname
-            }
+        const { data: authData, error: authError } = await signUpPreservingAdminSession(
+          mainMemberForm.email,
+          'Adventure',
+          {
+            first_name: mainMemberForm.firstname,
+            last_name: mainMemberForm.lastname
           }
-        })
+        )
 
         if (authError) {
           console.error('Auth error:', authError)
@@ -558,16 +600,22 @@ const MemberManagement: React.FC = () => {
     }
 
     // No main_members row — create auth + insert (normal path)
-    const { data: authData, error: authError } = await supabase.auth.signUp({
-      email: tasterMember.email || '',
-      password: 'Adventure',
-      options: {
-        data: {
+    let authData: Awaited<ReturnType<typeof signUpPreservingAdminSession>>['data'] | null = null
+    let authError: Awaited<ReturnType<typeof signUpPreservingAdminSession>>['error'] | null = null
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const result = await signUpPreservingAdminSession(
+        tasterMember.email || '',
+        'Adventure',
+        {
           first_name: tasterMember.firstname,
           last_name: tasterMember.lastname
         }
-      }
-    })
+      )
+      authData = result.data
+      authError = result.error
+      if (!authError || !isRateLimitError(authError.message || '')) break
+      await sleep(1500 * (attempt + 1))
+    }
 
     if (authError) {
       const msg = authError.message || ''
@@ -580,7 +628,7 @@ const MemberManagement: React.FC = () => {
       return { ok: false, error: `Failed to create user account: ${authError.message}` }
     }
 
-    if (!authData.user) {
+    if (!authData?.user) {
       return { ok: false, error: 'Failed to create user account: No user data returned' }
     }
 
@@ -648,21 +696,33 @@ const MemberManagement: React.FC = () => {
 
     let nextMainState = [...mainMembers]
 
-    for (const tm of members) {
-      const res = await promoteSingleTasterMember(tm, cohortIdNum, circleNumber, alloc)
+    for (let i = 0; i < members.length; i++) {
+      const tm = members[i]
+      let res = await promoteSingleTasterMember(tm, cohortIdNum, circleNumber, alloc)
+
+      // Retry whole promote on rate-limit (covers non-signUp failures too)
+      let attempt = 0
+      while (!res.ok && isRateLimitError(res.error || '') && attempt < 3) {
+        attempt++
+        await sleep(2000 * attempt)
+        res = await promoteSingleTasterMember(tm, cohortIdNum, circleNumber, alloc)
+      }
+
       if (!res.ok) {
         failed.push({ member: tm, error: res.error || 'Unknown error' })
-        continue
-      }
-      if (res.updated) {
+      } else if (res.updated) {
         if (res.oldCohortId && res.oldCohortId !== cohortIdNum) cohortsToRefresh.add(res.oldCohortId)
         nextMainState = nextMainState.map(m => (m.id === res.updated!.id ? { ...m, ...res.updated } : m))
         if (!nextMainState.some(m => m.id === res.updated!.id)) {
           nextMainState = [res.updated!, ...nextMainState]
         }
-      }
-      if (res.created) {
+      } else if (res.created) {
         nextMainState = [res.created, ...nextMainState.filter(m => m.id !== res.created!.id)]
+      }
+
+      // Pace requests to avoid Supabase Auth rate limits
+      if (i < members.length - 1) {
+        await sleep(900)
       }
     }
 
@@ -702,6 +762,15 @@ const MemberManagement: React.FC = () => {
     openPromotionModal([tasterMember])
   }
 
+  const handlePromoteSelectedToMain = () => {
+    const selected = qualifiedTasterMembers.filter(m => qualifiedSelection.has(m.id))
+    if (selected.length === 0) {
+      setError('Select at least one qualified member to promote')
+      return
+    }
+    openPromotionModal(selected)
+  }
+
   const handleBulkPromoteToMain = () => {
     if (qualifiedTasterMembers.length === 0) {
       setError('No qualified members to promote')
@@ -709,6 +778,21 @@ const MemberManagement: React.FC = () => {
     }
     openPromotionModal(qualifiedTasterMembers)
   }
+
+  const toggleQualifiedSelected = (id: string) => {
+    setQualifiedSelection(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selectAllQualified = () => {
+    setQualifiedSelection(new Set(qualifiedTasterMembers.map(m => m.id)))
+  }
+
+  const clearQualifiedSelection = () => setQualifiedSelection(new Set())
 
   const confirmPromotion = async () => {
     if (!promotionModal) return
@@ -735,6 +819,7 @@ const MemberManagement: React.FC = () => {
         promotionCircleNumber
       )
       setPromotionModal(null)
+      clearQualifiedSelection()
       let message = `Done: ${successCount} member(s) promoted or updated.`
       if (failed.length > 0) {
         message += `\n\nFailed (${failed.length}):\n`
@@ -1032,16 +1117,18 @@ const MemberManagement: React.FC = () => {
         try {
 
           // Create auth user for the main member
-          const { data: authData, error: authError } = await supabase.auth.signUp({
-            email: email,
-            password: 'Adventure',
-            options: {
-              data: {
-                first_name: firstname,
-                last_name: lastname
-              }
-            }
-          })
+          let authData: Awaited<ReturnType<typeof signUpPreservingAdminSession>>['data'] | null = null
+          let authError: Awaited<ReturnType<typeof signUpPreservingAdminSession>>['error'] | null = null
+          for (let attempt = 0; attempt < 4; attempt++) {
+            const result = await signUpPreservingAdminSession(email, 'Adventure', {
+              first_name: firstname,
+              last_name: lastname
+            })
+            authData = result.data
+            authError = result.error
+            if (!authError || !isRateLimitError(authError.message || '')) break
+            await sleep(1500 * (attempt + 1))
+          }
 
           if (authError) {
             console.error('Auth error for', firstname, authError)
@@ -1049,7 +1136,7 @@ const MemberManagement: React.FC = () => {
             continue
           }
 
-          if (!authData.user) {
+          if (!authData?.user) {
             failedMembers.push({ member: row, error: 'No user data returned' })
             continue
           }
@@ -1908,25 +1995,82 @@ const MemberManagement: React.FC = () => {
         {activeTab === 'qualified' && (
           <div className="card">
             <div className="px-6 py-4 border-b border-gray-200">
-              <div className="flex justify-between items-center">
-                <h3 className="text-lg font-medium text-gray-900">Qualified Taster Members ({qualifiedTasterMembers.length})</h3>
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+                <div>
+                  <h3 className="text-lg font-medium text-gray-900">
+                    Qualified Taster Members ({qualifiedTasterMembers.length})
+                  </h3>
+                  {qualifiedSelection.size > 0 && (
+                    <p className="text-sm text-gray-500 mt-1">
+                      {qualifiedSelection.size} selected
+                    </p>
+                  )}
+                </div>
                 {qualifiedTasterMembers.length > 0 && (
-                  <button
-                    onClick={handleBulkPromoteToMain}
-                    disabled={saving}
-                    className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center disabled:opacity-50"
-                  >
-                    <UserPlus className="h-5 w-5 mr-2" />
-                    {saving ? 'Promoting...' : `Promote All ${qualifiedTasterMembers.length} Members`}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const allSelected =
+                          qualifiedTasterMembers.length > 0 &&
+                          qualifiedTasterMembers.every(m => qualifiedSelection.has(m.id))
+                        if (allSelected) clearQualifiedSelection()
+                        else selectAllQualified()
+                      }}
+                      className="btn-secondary text-sm"
+                    >
+                      {qualifiedTasterMembers.every(m => qualifiedSelection.has(m.id))
+                        ? 'Deselect all'
+                        : 'Select all'}
+                    </button>
+                    <button
+                      onClick={handlePromoteSelectedToMain}
+                      disabled={saving || qualifiedSelection.size === 0}
+                      className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center disabled:opacity-50"
+                    >
+                      <UserPlus className="h-5 w-5 mr-2" />
+                      {saving
+                        ? 'Promoting...'
+                        : `Promote selected (${qualifiedSelection.size})`}
+                    </button>
+                    <button
+                      onClick={handleBulkPromoteToMain}
+                      disabled={saving}
+                      className="bg-emerald-800 hover:bg-emerald-900 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center disabled:opacity-50"
+                    >
+                      <UserPlus className="h-5 w-5 mr-2" />
+                      {saving ? 'Promoting...' : `Promote all ${qualifiedTasterMembers.length}`}
+                    </button>
+                  </div>
                 )}
               </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Tip: select a smaller batch if you hit rate limits. New accounts are created slowly to avoid logging you out.
+              </p>
             </div>
             <div className="overflow-x-auto">
               {qualifiedTasterMembers.length > 0 ? (
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
+                      <th className="px-3 py-3 w-12 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allSelected =
+                              qualifiedTasterMembers.length > 0 &&
+                              qualifiedTasterMembers.every(m => qualifiedSelection.has(m.id))
+                            if (allSelected) clearQualifiedSelection()
+                            else selectAllQualified()
+                          }}
+                          className="text-primary-600 hover:text-primary-800 text-xs font-medium"
+                          title="Select or deselect all"
+                        >
+                          {qualifiedTasterMembers.every(m => qualifiedSelection.has(m.id))
+                            ? 'Deselect'
+                            : 'All'}
+                        </button>
+                      </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Name
                       </th>
@@ -1963,7 +2107,24 @@ const MemberManagement: React.FC = () => {
                     {qualifiedTasterMembers.map((member) => {
                       const existingMain = getExistingMainForTasterEmail(member.email)
                       return (
-                      <tr key={member.id} className="hover:bg-gray-50">
+                      <tr
+                        key={member.id}
+                        className={`hover:bg-gray-50 ${qualifiedSelection.has(member.id) ? 'bg-green-50' : ''}`}
+                      >
+                        <td className="px-3 py-4 whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => toggleQualifiedSelected(member.id)}
+                            className="text-gray-600 hover:text-primary-600"
+                            title="Select for promote"
+                          >
+                            {qualifiedSelection.has(member.id) ? (
+                              <CheckSquare className="h-5 w-5 text-primary-600" />
+                            ) : (
+                              <Square className="h-5 w-5" />
+                            )}
+                          </button>
+                        </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-sm font-medium text-gray-900">
                             {member.firstname} {member.lastname}

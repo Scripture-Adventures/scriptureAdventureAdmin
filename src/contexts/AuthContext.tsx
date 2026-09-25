@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react'
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { User, Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 
@@ -45,9 +45,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
+  /** Tracks confirmed admin email so signUp side-effects don't wipe the admin session */
+  const adminEmailRef = useRef<string | null>(null)
 
   const applySessionIfAdmin = async (nextSession: Session | null) => {
     if (!nextSession?.user?.email) {
+      adminEmailRef.current = null
       setSession(null)
       setUser(null)
       setLoading(false)
@@ -56,6 +59,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const isAdmin = await checkIsAdmin(nextSession.user.email)
     if (!isAdmin) {
+      // Creating members via auth.signUp briefly switches the client session to the new user.
+      // Do not sign the admin out — the caller restores the admin session.
+      if (adminEmailRef.current) {
+        setLoading(false)
+        return
+      }
       await supabase.auth.signOut()
       setSession(null)
       setUser(null)
@@ -63,23 +72,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return
     }
 
+    adminEmailRef.current = nextSession.user.email
     setSession(nextSession)
     setUser(nextSession.user)
     setLoading(false)
   }
 
   useEffect(() => {
-    // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       applySessionIfAdmin(session)
     })
 
-    // Listen for auth changes
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      // Avoid re-checking during intentional sign-out after failed admin check
       if (!session) {
+        adminEmailRef.current = null
         setSession(null)
         setUser(null)
         setLoading(false)
@@ -115,6 +123,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   const signOut = async () => {
+    adminEmailRef.current = null
     await supabase.auth.signOut()
   }
 
